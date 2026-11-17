@@ -1,0 +1,65 @@
+{
+  "type": "record",
+  "name": "DocumentGenerated",
+  "namespace": "signingplatform.documents",
+  "doc": "Published when the Document Generator has stored a draft PDF.",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      }
+    },
+    {
+      "name": "eventType",
+      "type": "string"
+    },
+    {
+      "name": "eventVersion",
+      "type": "int"
+    },
+    {
+      "name": "occurredAt",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "agreementId",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      }
+    },
+    {
+      "name": "correlationId",
+      "type": "string"
+    },
+    {
+      "name": "documentId",
+      "type": "string"
+    },
+    {
+      "name": "bucket",
+      "type": "string"
+    },
+    {
+      "name": "key",
+      "type": "string"
+    },
+    {
+      "name": "sha256",
+      "type": "string"
+    },
+    {
+      "name": "signerName",
+      "type": "string"
+    },
+    {
+      "name": "signerEmail",
+      "type": "string"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "type": "record",
+  "name": "EnvelopeCompleted",
+  "namespace": "signingplatform.envelopes",
+  "doc": "Published when every signer has signed the envelope.",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      }
+    },
+    {
+      "name": "eventType",
+      "type": "string"
+    },
+    {
+      "name": "eventVersion",
+      "type": "int"
+    },
+    {
+      "name": "occurredAt",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "agreementId",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      }
+    },
+    {
+      "name": "correlationId",
+      "type": "string"
+    },
+    {
+      "name": "envelopeId",
+      "type": "string"
+    },
+    {
+      "name": "completedAt",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "bucket",
+      "type": "string"
+    },
+    {
+      "name": "signedDocumentKey",
+      "type": "string"
+    },
+    {
+      "name": "certificateKey",
+      "type": "string"
+    }
+  ]
+}

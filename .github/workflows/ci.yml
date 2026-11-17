@@ -36,5 +36,25 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Generate types
+        run: |
+          pnpm generate
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Generated types are out of date. Run 'pnpm generate' and commit the result."
+            git status --short
+            git diff
+            exit 1
+          fi
+
       - name: Unit tests
         run: pnpm test
+
+      - name: Start Kafka, schema registry, and DynamoDB Local
+        run: docker compose up -d --wait
+
+      - name: Integration tests
+        run: pnpm test:integration
+
+      - name: Show container logs
+        if: failure()
+        run: docker compose logs --no-color --tail 200
