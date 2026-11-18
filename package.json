@@ -9,7 +9,9 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit && pnpm -r typecheck",
-    "test": "vitest run"
+    "generate": "pnpm -r generate",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

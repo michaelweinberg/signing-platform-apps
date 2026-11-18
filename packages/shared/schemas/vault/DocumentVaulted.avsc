@@ -1,0 +1,67 @@
+{
+  "type": "record",
+  "name": "DocumentVaulted",
+  "namespace": "signingplatform.vault",
+  "doc": "Published when the Vault Service has stored the signed document under Object Lock.",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      }
+    },
+    {
+      "name": "eventType",
+      "type": "string"
+    },
+    {
+      "name": "eventVersion",
+      "type": "int"
+    },
+    {
+      "name": "occurredAt",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "agreementId",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      }
+    },
+    {
+      "name": "correlationId",
+      "type": "string"
+    },
+    {
+      "name": "vaultRecordId",
+      "type": "string"
+    },
+    {
+      "name": "signedDocumentSha256",
+      "type": "string"
+    },
+    {
+      "name": "certificateSha256",
+      "type": "string"
+    },
+    {
+      "name": "retainUntil",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "vaultedAt",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    }
+  ]
+}

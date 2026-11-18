@@ -1,3 +1,9 @@
-// Placeholder so the workspace has something to lint, typecheck, and test.
-// Replaced by the real shared code (Avro, outbox, logger, tracing) in later tickets.
-export const PLATFORM_NAME = 'signing-platform';
+export { DecimalType, createSchemaRegistry, encodeEvent, type SchemaRegistryConfig } from './avro.js';
+export * from './generated/events.js';
+export {
+  createOutboxRelay,
+  outboxPut,
+  type OutboxPutOptions,
+  type OutboxRelayDependencies,
+  type OutboxStreamRecord,
+} from './outbox.js';

@@ -7,6 +7,19 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "generate": "node scripts/generate-types.ts",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1171.0",
+    "@aws-sdk/lib-dynamodb": "^3.1171.0",
+    "@aws-sdk/util-dynamodb": "^3.996.9",
+    "@kafkajs/confluent-schema-registry": "^4.1.0",
+    "avsc": "^5.7.9",
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb-streams": "^3.1171.0",
+    "@types/node": "^24.19.2"
   }
 }

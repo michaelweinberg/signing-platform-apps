@@ -1,0 +1,89 @@
+{
+  "type": "record",
+  "name": "AgreementRequested",
+  "namespace": "signingplatform.agreements",
+  "doc": "Published when the Agreement API accepts a new agreement.",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      }
+    },
+    {
+      "name": "eventType",
+      "type": "string"
+    },
+    {
+      "name": "eventVersion",
+      "type": "int"
+    },
+    {
+      "name": "occurredAt",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "agreementId",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      }
+    },
+    {
+      "name": "correlationId",
+      "type": "string"
+    },
+    {
+      "name": "source",
+      "type": {
+        "type": "enum",
+        "name": "AgreementSource",
+        "symbols": [
+          "SALESFORCE",
+          "DASHBOARD"
+        ]
+      }
+    },
+    {
+      "name": "opportunityId",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "templateId",
+      "type": "string"
+    },
+    {
+      "name": "customerName",
+      "type": "string"
+    },
+    {
+      "name": "amount",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 12,
+        "scale": 2
+      }
+    },
+    {
+      "name": "currency",
+      "type": "string"
+    },
+    {
+      "name": "signerName",
+      "type": "string"
+    },
+    {
+      "name": "signerEmail",
+      "type": "string"
+    }
+  ]
+}
