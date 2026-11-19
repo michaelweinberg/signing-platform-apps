@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  # Lets deploy.yml run exactly these checks before it deploys.
+  workflow_call:
 
 # Pull request runs only check code. They never assume the AWS deploy role.
 permissions:
@@ -9,7 +11,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request replaces the older run. Checks called from a deploy are never cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
