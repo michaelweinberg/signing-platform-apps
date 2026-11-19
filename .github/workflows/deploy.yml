@@ -1,0 +1,58 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One deploy at a time. A run that arrives while another is in progress waits for it;
+# it is never run in parallel and never cancels the run in progress. GitHub keeps one
+# waiting run per group, so if several merges pile up only the newest waits, which is
+# fine: it deploys everything the skipped runs would have.
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to demo
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: demo
+    permissions:
+      contents: read
+      id-token: write # to assume the AWS deploy role through OIDC
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Assume the AWS deploy role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        run: pnpm sst deploy --stage demo
+
+      - name: Check the throwaway route
+        run: |
+          url="$(jq -r .apiUrl .sst/outputs.json)"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors "$url/hello"

@@ -1,4 +1,7 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["*.ts"]
+  "include": ["*.ts"],
+  // SST's generated types in `.sst/platform` are TypeScript source that does not compile
+  // under this repo's compiler options, so `sst.config.ts` is checked by SST, not by `tsc`.
+  "exclude": ["sst.config.ts"]
 }
