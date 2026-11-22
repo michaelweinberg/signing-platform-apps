@@ -53,6 +53,25 @@ jobs:
         run: pnpm sst deploy --stage demo
 
       - name: Check the throwaway route
+        env:
+          CLIENT_ID: ${{ secrets.SMOKE_TEST_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.SMOKE_TEST_CLIENT_SECRET }}
         run: |
-          url="$(jq -r .apiUrl .sst/outputs.json)"
-          curl --fail --silent --show-error --retry 5 --retry-all-errors "$url/hello"
+          api="$(jq -r .apiUrl .sst/outputs.json)"
+          auth="$(jq -r .authUrl .sst/outputs.json)"
+
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$api/hello")"
+          if [ "$status" != 401 ]; then
+            echo "::error::Expected 401 without a token, got $status."
+            exit 1
+          fi
+
+          if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+            echo "::error::Set the SMOKE_TEST_CLIENT_ID and SMOKE_TEST_CLIENT_SECRET secrets on the demo environment (see the README), then re-run this job."
+            exit 1
+          fi
+
+          token="$(curl --fail --silent --show-error --user "$CLIENT_ID:$CLIENT_SECRET" \
+            --data grant_type=client_credentials "$auth/oauth2/token" | jq -r .access_token)"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            --header "Authorization: Bearer $token" "$api/hello"

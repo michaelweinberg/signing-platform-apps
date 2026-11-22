@@ -7,3 +7,13 @@ export {
   type OutboxRelayDependencies,
   type OutboxStreamRecord,
 } from './outbox.js';
+export { ForbiddenError, authorize, requirePermission, type Caller, type VerifiedClaims } from './guard.js';
+export {
+  groupPermissions,
+  machineClientPermissions,
+  permissions,
+  permissionsFor,
+  resourceServer,
+  scopeFor,
+  type Permission,
+} from './permissions.js';
