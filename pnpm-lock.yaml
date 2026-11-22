@@ -25,9 +25,13 @@ importers:
         version: 8.73.0(eslint@10.15.0)(typescript@6.0.3)
       vitest:
         specifier: ^5.1.0
-        version: 5.1.0(@types/node@26.6.6)(vite@8.3.8(@types/node@26.6.6))
+        version: 5.1.0(@opentelemetry/api@1.10.0)(@types/node@26.6.6)(vite@8.3.8(@types/node@26.6.6))
 
   apps/hello:
+    dependencies:
+      '@signing-platform/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
     devDependencies:
       '@types/aws-lambda':
         specifier: ^8.10.155
@@ -47,6 +51,9 @@ importers:
       '@kafkajs/confluent-schema-registry':
         specifier: ^4.1.0
         version: 4.1.0
+      '@opentelemetry/api':
+        specifier: ^1.10.0
+        version: 1.10.0
       avsc:
         specifier: ^5.7.9
         version: 5.7.9
@@ -57,6 +64,9 @@ importers:
       '@aws-sdk/client-dynamodb-streams':
         specifier: ^3.1171.0
         version: 3.1171.0
+      '@types/aws-lambda':
+        specifier: ^8.10.164
+        version: 8.10.164
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
@@ -269,6 +279,10 @@ packages:
     peerDependencies:
       '@emnapi/core': ^1.7.1 || 2.0.0-beta.2
       '@emnapi/runtime': ^1.7.1 || 2.0.0-beta.2
+
+  '@opentelemetry/api@1.10.0':
+    resolution: {integrity: sha512-lMkyes8iHrG+mk6WH7X70MdCLI2RS0FwNBY1PyQ8UemaijE2m5mv5A0Niy3HtbYTFrgkUEQjFMXmSAk2hQDuPQ==}
+    engines: {node: '>=8.0.0'}
 
   '@oxc-project/types@0.156.0':
     resolution: {integrity: sha512-1Duyg48TdJNdyhEB8Xn1L36bT9Pv6GUtlKjHxOys8xkaF/rQq3XJE+bAurSK/AgIz5mGFsb77cn9Pb20+WCScw==}
@@ -1484,6 +1498,8 @@ snapshots:
       '@tybys/wasm-util': 0.10.5
     optional: true
 
+  '@opentelemetry/api@1.10.0': {}
+
   '@oxc-project/types@0.156.0': {}
 
   '@protobufjs/aspromise@1.1.2': {}
@@ -2216,7 +2232,7 @@ snapshots:
       '@types/node': 26.6.6
       fsevents: 2.3.3
 
-  vitest@5.1.0(@types/node@26.6.6)(vite@8.3.8(@types/node@26.6.6)):
+  vitest@5.1.0(@opentelemetry/api@1.10.0)(@types/node@26.6.6)(vite@8.3.8(@types/node@26.6.6)):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/mocker': 5.1.0(vite@8.3.8(@types/node@26.6.6))
@@ -2233,6 +2249,7 @@ snapshots:
       vite: 8.3.8(@types/node@26.6.6)
       why-is-node-running: 3.2.1
     optionalDependencies:
+      '@opentelemetry/api': 1.10.0
       '@types/node': 26.6.6
     transitivePeerDependencies:
       - msw

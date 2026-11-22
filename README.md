@@ -43,7 +43,7 @@ The Avro schemas in `packages/shared/schemas/<topic>/<RecordName>.avsc` are the 
 
 ## Infrastructure and stages
 
-`sst.config.ts` declares all infrastructure with [SST](https://sst.dev): for now the one shared API Gateway (HTTP API) and a throwaway `GET /hello` route. Every stage deploys to `us-west-2`.
+`sst.config.ts` declares all infrastructure with [SST](https://sst.dev): for now the one shared API Gateway (HTTP API), the Cognito user pool, and a throwaway `GET /hello` route. Every stage deploys to `us-west-2`.
 
 | Stage | Deployed by | How |
 |---|---|---|
@@ -63,13 +63,50 @@ pnpm dev
 
 Do not name a route `/ping`: API Gateway reserves that path for its own health check and never forwards it.
 
+## Authentication and permissions
+
+Every route on the gateway requires an access token from the stage's Cognito user pool. `sst.config.ts` sets the JWT authorizer as the default for every route; a route opts out only with `auth: false`. A missing, expired, or foreign token gets `401` at the gateway and no Lambda runs.
+
+Permissions are checked in the handler by the guard in `packages/shared/src/guard.ts`. A handler declares the permission it needs, never a group or a scope:
+
+```ts
+export const handler = requirePermission('agreements.read', async (event, caller) => { ... });
+```
+
+A valid token without the permission gets `403`. The guard also sets the caller's subject (`enduser.id`) and client ID (`oauth.client_id`) on the current OpenTelemetry span. Code that is not a plain Lambda handler can call `authorize(claims, permission)` directly.
+
+`packages/shared/src/permissions.ts` is the one file that says who may do what: which permissions each Cognito group grants, and which each machine client holds. `sst.config.ts` reads the same file to create the groups, the `signing-api` scopes, and each machine client's scopes, so to add a role or change a caller's access, edit that file and deploy.
+
+| Caller | App client | Gets permissions from |
+|---|---|---|
+| Dashboard user | `dashboard` (public; authorization code with PKCE) | Their groups: `viewer`, `operator` |
+| Salesforce | `salesforce` (client credentials) | The client's `signing-api/...` scopes |
+| Smoke test | `smoke-test` (client credentials) | The client's `signing-api/...` scopes |
+
+Users are created by hand in the Cognito console (there is no self sign-up) and must be added to a group; a user in no group gets `403` everywhere. They enrol a TOTP authenticator app at first sign-in.
+
+To call your dev stage from a terminal, fetch a token as the `smoke-test` client. The IDs and URLs are in `.sst/outputs.json` after a deploy:
+
+```sh
+out=.sst/outputs.json
+pool="$(jq -r .userPoolId $out)" client="$(jq -r .smokeTestClientId $out)"
+secret="$(aws cognito-idp describe-user-pool-client --region us-west-2 --user-pool-id "$pool" \
+  --client-id "$client" --query UserPoolClient.ClientSecret --output text)"
+token="$(curl -s -u "$client:$secret" -d grant_type=client_credentials \
+  "$(jq -r .authUrl $out)/oauth2/token" | jq -r .access_token)"
+curl -H "Authorization: Bearer $token" "$(jq -r .apiUrl $out)/hello"
+```
+
+Each machine client is billed monthly by Cognito for as long as it exists, on every stage. `pnpm sst remove` on a dev stage you are not using stops that.
+
 ## Pull request checks
 
 `.github/workflows/ci.yml` runs install, lint, typecheck, a check that the generated types are up to date, unit tests, and integration tests (against Docker Compose in the runner) on every pull request. It deploys nothing and needs no AWS access.
 
 ## Deploy
 
-`.github/workflows/deploy.yml` runs on every merge to `main`. It runs the same checks as a pull request (it calls `ci.yml`), then runs `sst deploy --stage demo` and requests the throwaway route on the deployed gateway. There is no manual step.
+`.github/workflows/deploy.yml` runs on every merge to `main`. It runs the same checks as a pull request (it calls `ci.yml`), then runs `sst deploy --stage demo` and requests the throwaway route on the deployed gateway: once without a token, expecting `401`, and once with a token fetched as the `smoke-test` client, expecting `200`.
 
 - The deploy job runs in the `demo` GitHub environment and assumes the AWS role in that environment's `AWS_ROLE_ARN` variable through OIDC. No AWS key is stored in GitHub.
+- The token check reads the `smoke-test` client's ID and secret from the `demo` environment secrets `SMOKE_TEST_CLIENT_ID` and `SMOKE_TEST_CLIENT_SECRET`. Cognito generates them on the first deploy that creates the client, so that one run fails at the check; copy both from the Cognito console (user pool → App clients → `smoke-test`) into the environment secrets and re-run the job. They change only if the client is replaced.
 - Deploys never run in parallel. A run that starts while another is in progress waits for it to finish.
