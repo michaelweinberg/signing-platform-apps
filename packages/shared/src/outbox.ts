@@ -4,6 +4,7 @@ import { unmarshall } from '@aws-sdk/util-dynamodb';
 import type { Producer, TopicMessages } from 'kafkajs';
 import { assertValidEvent, encodeEvent } from './avro.js';
 import { EVENT_CATALOGUE, type EventMap, type EventName } from './generated/events.js';
+import { kafkaClientsFromEnv } from './kafka.js';
 
 const OUTBOX_KEY_PREFIX = 'OUTBOX#';
 
@@ -112,5 +113,34 @@ export function createOutboxRelay({ producer, registry }: OutboxRelayDependencie
     await producer.sendBatch({
       topicMessages: [...messagesByTopic].map(([topic, messages]) => ({ topic, messages })),
     });
+  };
+}
+
+/**
+ * The outbox relay as a Lambda handler, configured from the environment (see
+ * `kafkaClientsFromEnv`). Subscribe it to a service table's DynamoDB stream:
+ *
+ * ```ts
+ * export const handler = outboxRelayHandler();
+ * ```
+ *
+ * The producer connects on the first invocation and is reused by later ones.
+ */
+export function outboxRelayHandler(): (event: { Records: OutboxStreamRecord[] }) => Promise<void> {
+  let relay: Promise<ReturnType<typeof createOutboxRelay>> | undefined;
+
+  async function connect() {
+    const { kafka, registry } = kafkaClientsFromEnv();
+    // Topics are declared in sst.config.ts. A missing one is an error, never created here.
+    const producer = kafka.producer({ allowAutoTopicCreation: false });
+    await producer.connect();
+    return createOutboxRelay({ producer, registry });
+  }
+
+  return async (event) => {
+    relay ??= connect();
+    // A failed connection must not be cached, or the function would fail until its next cold start.
+    relay.catch(() => (relay = undefined));
+    await (await relay)(event);
   };
 }

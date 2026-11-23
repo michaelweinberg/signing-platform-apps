@@ -1,8 +1,10 @@
 export { DecimalType, createSchemaRegistry, encodeEvent, type SchemaRegistryConfig } from './avro.js';
 export * from './generated/events.js';
+export { kafkaClientsFromEnv } from './kafka.js';
 export {
   createOutboxRelay,
   outboxPut,
+  outboxRelayHandler,
   type OutboxPutOptions,
   type OutboxRelayDependencies,
   type OutboxStreamRecord,

@@ -63,7 +63,10 @@ const eventTypes = new Map<EventName, avro.Type>();
 export function avroTypeFor(eventName: EventName): avro.Type {
   let type = eventTypes.get(eventName);
   if (!type) {
-    type = avro.Type.forSchema(EVENT_CATALOGUE[eventName].schema as avro.Schema, AVRO_OPTIONS);
+    // A copy, because avsc records every named type it compiles on the options it is given.
+    // The registry client shares AVRO_OPTIONS, and would then refuse to compile the same
+    // record again as a duplicate.
+    type = avro.Type.forSchema(EVENT_CATALOGUE[eventName].schema as avro.Schema, { ...AVRO_OPTIONS });
     eventTypes.set(eventName, type);
   }
   return type;
