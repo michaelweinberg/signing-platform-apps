@@ -61,3 +61,17 @@ jobs:
       - name: Show container logs
         if: failure()
         run: docker compose logs --no-color --tail 200
+
+      # Read-only against the demo registry: nothing is registered here. The key is a
+      # repository secret, because pull requests cannot read the demo environment's secrets.
+      - name: Schema compatibility
+        env:
+          SCHEMA_REGISTRY_URL: ${{ vars.SCHEMA_REGISTRY_URL }}
+          SCHEMA_REGISTRY_API_KEY: ${{ secrets.SCHEMA_REGISTRY_API_KEY }}
+          SCHEMA_REGISTRY_API_SECRET: ${{ secrets.SCHEMA_REGISTRY_API_SECRET }}
+        run: |
+          if [ -z "$SCHEMA_REGISTRY_URL" ] || [ -z "$SCHEMA_REGISTRY_API_KEY" ] || [ -z "$SCHEMA_REGISTRY_API_SECRET" ]; then
+            echo "::error::Set the SCHEMA_REGISTRY_URL repository variable and the SCHEMA_REGISTRY_API_KEY and SCHEMA_REGISTRY_API_SECRET repository secrets (see the README)."
+            exit 1
+          fi
+          pnpm schemas:check

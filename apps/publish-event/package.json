@@ -1,0 +1,19 @@
+{
+  "name": "@signing-platform/publish-event",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "expect-event": "tsx scripts/expect-event.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1171.0",
+    "@aws-sdk/lib-dynamodb": "^3.1171.0",
+    "@signing-platform/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "kafkajs": "^2.2.4"
+  }
+}

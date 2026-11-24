@@ -8,6 +8,9 @@ export default $config({
       providers: {
         // Every stage lives in the same region as the Confluent Cloud cluster.
         aws: { region: 'us-west-2' },
+        // Topics only. It is given no account-wide key: each topic carries the cluster's
+        // own API key.
+        confluentcloud: { package: '@pulumi/confluentcloud', version: '2.92.0' },
       },
       removal: input.stage === 'demo' ? 'retain' : 'remove',
       protect: input.stage === 'demo',
@@ -149,6 +152,89 @@ export default $config({
       runtime: 'nodejs24.x',
     });
 
+    // ---- Kafka -------------------------------------------------------------------------
+
+    // Where the stage's Confluent Cloud cluster is, and the admin API key that creates its
+    // topics. The deploy workflow sets these from the `demo` GitHub environment; a dev
+    // stage reads them from `.env`. A dev stage without them deploys without Kafka.
+    const confluent = {
+      clusterId: process.env.CONFLUENT_CLUSTER_ID,
+      restEndpoint: process.env.CONFLUENT_REST_ENDPOINT,
+      bootstrapServers: process.env.CONFLUENT_BOOTSTRAP_SERVERS,
+      apiKey: process.env.CONFLUENT_CLUSTER_API_KEY,
+      apiSecret: process.env.CONFLUENT_CLUSTER_API_SECRET,
+      schemaRegistryUrl: process.env.SCHEMA_REGISTRY_URL,
+    };
+    const unset = Object.entries(confluent).filter(([, value]) => !value);
+    const hasKafka = unset.length === 0;
+    if (!hasKafka && (unset.length < Object.keys(confluent).length || $app.stage === 'demo')) {
+      throw new Error(
+        `Confluent settings missing: ${unset.map(([name]) => name).join(', ')}. See "Kafka" in the README.`,
+      );
+    }
+
+    let publishEventFunction: $util.Output<string> | undefined;
+
+    if (hasKafka) {
+      const { EVENT_CATALOGUE } = await import('./packages/shared/src/generated/events');
+
+      // One topic per producing service, named in the event catalogue.
+      for (const topic of new Set(Object.values(EVENT_CATALOGUE).map(({ topic }) => topic))) {
+        new confluentcloud.KafkaTopic(`KafkaTopic-${topic}`, {
+          kafkaCluster: { id: confluent.clusterId! },
+          restEndpoint: confluent.restEndpoint!,
+          credentials: { key: confluent.apiKey!, secret: $util.secret(confluent.apiSecret!) },
+          topicName: topic,
+          partitionsCount: 3,
+        });
+      }
+
+      // What a running service connects with. Set once per stage from a laptop; the
+      // pipeline never sees these, and they are not the admin key above.
+      const kafkaApiKey = new sst.Secret('KafkaApiKey');
+      const kafkaApiSecret = new sst.Secret('KafkaApiSecret');
+      const schemaRegistryApiKey = new sst.Secret('SchemaRegistryApiKey');
+      const schemaRegistryApiSecret = new sst.Secret('SchemaRegistryApiSecret');
+
+      // The environment `kafkaClientsFromEnv` in the shared package reads.
+      const kafkaEnvironment = {
+        KAFKA_BOOTSTRAP_SERVERS: confluent.bootstrapServers!,
+        KAFKA_API_KEY: kafkaApiKey.value,
+        KAFKA_API_SECRET: kafkaApiSecret.value,
+        SCHEMA_REGISTRY_URL: confluent.schemaRegistryUrl!,
+        SCHEMA_REGISTRY_API_KEY: schemaRegistryApiKey.value,
+        SCHEMA_REGISTRY_API_SECRET: schemaRegistryApiSecret.value,
+      };
+
+      // Throwaway: one function writes an event to an outbox, and the relay publishes it.
+      // Proves the outbox reaches Confluent Cloud from a deployed stage. Remove the table
+      // and both functions once a real service publishes.
+      const publishEventTable = new sst.aws.Dynamo('PublishEventTable', {
+        fields: { PK: 'string' },
+        primaryIndex: { hashKey: 'PK' },
+        stream: 'new-image',
+      });
+
+      publishEventTable.subscribe(
+        'PublishEventRelay',
+        {
+          handler: 'apps/publish-event/src/relay.handler',
+          runtime: 'nodejs24.x',
+          timeout: '30 seconds',
+          environment: kafkaEnvironment,
+        },
+        { filters: [{ eventName: ['INSERT'] }] },
+      );
+
+      const publishEvent = new sst.aws.Function('PublishEvent', {
+        handler: 'apps/publish-event/src/publish.handler',
+        runtime: 'nodejs24.x',
+        environment: { TABLE_NAME: publishEventTable.name },
+        permissions: [{ actions: ['dynamodb:PutItem'], resources: [publishEventTable.arn] }],
+      });
+      publishEventFunction = publishEvent.name;
+    }
+
     return {
       apiUrl: api.url,
       userPoolId: userPool.id,
@@ -157,6 +243,8 @@ export default $config({
       dashboardClientId: dashboardClient.id,
       salesforceClientId: salesforceClient.id,
       smokeTestClientId: smokeTestClient.id,
+      // Invoke this to publish one event through the outbox. Absent on a stage without Kafka.
+      publishEventFunction,
     };
   },
 });

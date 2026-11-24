@@ -19,6 +19,8 @@ jobs:
   checks:
     name: Checks
     uses: ./.github/workflows/ci.yml
+    # The schema compatibility check reads the registry with repository secrets.
+    secrets: inherit
 
   deploy:
     name: Deploy to demo
@@ -43,13 +45,31 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Before any code deploys, so new code never runs against a registry that lacks its
+      # schemas. Fails, and stops the deploy, on a BACKWARD-incompatible schema.
+      - name: Register schemas
+        env:
+          SCHEMA_REGISTRY_URL: ${{ vars.SCHEMA_ENVIRONMENT_URL }}
+          SCHEMA_REGISTRY_API_KEY: ${{ secrets.CONFLUENT_SR_API_KEY }}
+          SCHEMA_REGISTRY_API_SECRET: ${{ secrets.CONFLUENT_SR_API_SECRET }}
+        run: pnpm schemas:register
+
       - name: Assume the AWS deploy role
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      # The admin key creates the topics. The key the running apps connect with is an SST
+      # secret, which the pipeline never sees.
       - name: Deploy
+        env:
+          CONFLUENT_CLUSTER_ID: ${{ vars.CLUSTER_ID }}
+          CONFLUENT_REST_ENDPOINT: ${{ vars.CLUSTER_ENDPOINT }}
+          CONFLUENT_BOOTSTRAP_SERVERS: ${{ vars.CLUSTER_BOOTSTRAP_SERVERS }}
+          CONFLUENT_CLUSTER_API_KEY: ${{ secrets.CONFLUENT_CLUSTER_API_KEY }}
+          CONFLUENT_CLUSTER_API_SECRET: ${{ secrets.CONFLUENT_CLUSTER_API_SECRET }}
+          SCHEMA_REGISTRY_URL: ${{ vars.SCHEMA_ENVIRONMENT_URL }}
         run: pnpm sst deploy --stage demo
 
       - name: Check the throwaway route
@@ -75,3 +95,25 @@ jobs:
             --data grant_type=client_credentials "$auth/oauth2/token" | jq -r .access_token)"
           curl --fail --silent --show-error --retry 5 --retry-all-errors \
             --header "Authorization: Bearer $token" "$api/hello"
+
+      # Throwaway, like the function it invokes: writes one event to an outbox, then reads
+      # the topic with the admin key until the relay has published it.
+      - name: Publish an event through the outbox
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: ${{ vars.CLUSTER_BOOTSTRAP_SERVERS }}
+          KAFKA_API_KEY: ${{ secrets.CONFLUENT_CLUSTER_API_KEY }}
+          KAFKA_API_SECRET: ${{ secrets.CONFLUENT_CLUSTER_API_SECRET }}
+          SCHEMA_REGISTRY_URL: ${{ vars.SCHEMA_ENVIRONMENT_URL }}
+          SCHEMA_REGISTRY_API_KEY: ${{ secrets.CONFLUENT_SR_API_KEY }}
+          SCHEMA_REGISTRY_API_SECRET: ${{ secrets.CONFLUENT_SR_API_SECRET }}
+          KAFKAJS_NO_PARTITIONER_WARNING: '1'
+        run: |
+          published="$RUNNER_TEMP/published.json"
+          aws lambda invoke --function-name "$(jq -r .publishEventFunction .sst/outputs.json)" "$published"
+          # A function error still exits 0; its payload then has no agreement ID.
+          if ! jq --exit-status .agreementId "$published" > /dev/null; then
+            echo "::error::The publish function failed: $(cat "$published")"
+            exit 1
+          fi
+          pnpm --filter @signing-platform/publish-event expect-event \
+            "$(jq -r .topic "$published")" "$(jq -r .agreementId "$published")"

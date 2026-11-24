@@ -8,6 +8,7 @@
   },
   "scripts": {
     "generate": "node scripts/generate-types.ts",
+    "schemas": "tsx scripts/schemas.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

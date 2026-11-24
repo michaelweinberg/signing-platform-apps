@@ -15,6 +15,7 @@ import {
   EVENT_CATALOGUE,
   createOutboxRelay,
   createSchemaRegistry,
+  encodeEvent,
   outboxPut,
   type AgreementRequested,
   type OutboxStreamRecord,
@@ -157,6 +158,20 @@ test('a state change and its event are written together and the relay publishes 
     await registry.getLatestSchemaId('agreements-signingplatform.agreements.AgreementRequested'),
   );
   expect(await registry.decode(value)).toEqual(event);
+});
+
+test('a process that has validated an event can still encode it with a new registry client', async () => {
+  const event = agreementRequested();
+  // Validates the event, which compiles its schema.
+  outboxPut('AgreementRequested', event, { tableName });
+
+  // A client that has not seen the schema fetches it from the registry and compiles it again.
+  const freshRegistry = createSchemaRegistry({
+    host: process.env.SCHEMA_REGISTRY_URL ?? 'http://localhost:8081',
+  });
+  const value = await encodeEvent(freshRegistry, 'AgreementRequested', event);
+
+  expect(await freshRegistry.decode(value)).toEqual(event);
 });
 
 test('a failed transaction writes neither the state change nor the outbox item', async () => {

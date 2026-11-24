@@ -16,6 +16,8 @@ The apps monorepo for the signing platform. Specs live in
 | `pnpm lint` | Lints all packages with ESLint |
 | `pnpm typecheck` | Typechecks all packages with `tsc` |
 | `pnpm generate` | Regenerates TypeScript types from the `.avsc` files |
+| `pnpm schemas:check` | Fails if a schema is not `BACKWARD`-compatible with a schema registry |
+| `pnpm schemas:register` | Registers every schema with a schema registry |
 | `pnpm test` | Runs unit tests with Vitest |
 | `pnpm test:integration` | Runs integration tests against the local infrastructure |
 | `pnpm dev` | Deploys your personal dev stage and runs it in SST live mode |
@@ -34,6 +36,12 @@ docker compose down           # stop and discard all data
 
 The Avro schemas in `packages/shared/schemas/<topic>/<RecordName>.avsc` are the source of truth for every event. `packages/shared/src/generated/events.ts` is generated from them and committed; after changing a schema, run `pnpm generate` and commit the result. Never edit the generated file by hand.
 
+Schemas are registered by the deploy workflow, never by a running service: a producer only looks its schema up, and fails if it is not there. Each event has its own subject, `<topic>-<namespace>.<RecordName>`, set to `BACKWARD` compatibility: a new field needs a default, and a field can be removed only if it had one. `pnpm schemas:check` and `pnpm schemas:register` are what the workflows run; both read `SCHEMA_REGISTRY_URL`, plus `SCHEMA_REGISTRY_API_KEY` and `SCHEMA_REGISTRY_API_SECRET` when the registry needs them. To try a change against the local registry:
+
+```sh
+SCHEMA_REGISTRY_URL=http://localhost:8081 pnpm schemas:check
+```
+
 ## Layout
 
 | Path | Holds |
@@ -43,7 +51,7 @@ The Avro schemas in `packages/shared/schemas/<topic>/<RecordName>.avsc` are the 
 
 ## Infrastructure and stages
 
-`sst.config.ts` declares all infrastructure with [SST](https://sst.dev): for now the one shared API Gateway (HTTP API), the Cognito user pool, and a throwaway `GET /hello` route. Every stage deploys to `us-west-2`.
+`sst.config.ts` declares all infrastructure with [SST](https://sst.dev): for now the one shared API Gateway (HTTP API), the Cognito user pool, the Kafka topics, a throwaway `GET /hello` route, and a throwaway function that publishes one event. Every stage deploys to `us-west-2`.
 
 | Stage | Deployed by | How |
 |---|---|---|
@@ -62,6 +70,51 @@ pnpm dev
 `sst.config.ts` is excluded from `tsc` and ESLint, because SST's generated types do not compile under this repo's compiler options. Your editor still type-checks it once `.sst/` exists (any `sst` command creates it).
 
 Do not name a route `/ping`: API Gateway reserves that path for its own health check and never forwards it.
+
+## Kafka
+
+The four topics in the event catalogue are declared in `sst.config.ts` through the Confluent provider, with 3 partitions each, and created by `sst deploy`. The cluster itself is created by hand in Confluent Cloud.
+
+There are two sets of Confluent credentials, and they are kept apart:
+
+| Credentials | Used for | Live in |
+|---|---|---|
+| Admin keys for the cluster and the schema registry | Creating topics, registering schemas | The `demo` GitHub environment's secrets |
+| Runtime keys for the cluster and the schema registry | The running apps: producing, consuming, looking schemas up | SST secrets, set once per stage from a laptop |
+
+`sst deploy` reads where the cluster is, and the admin key, from environment variables. The deploy workflow fills them from the `demo` environment:
+
+| Environment variable | `demo` environment | Example |
+|---|---|---|
+| `CONFLUENT_CLUSTER_ID` | Variable `CLUSTER_ID` | `lkc-abc123` |
+| `CONFLUENT_REST_ENDPOINT` | Variable `CLUSTER_ENDPOINT` | `https://….confluent.cloud:443` |
+| `CONFLUENT_BOOTSTRAP_SERVERS` | Variable `CLUSTER_BOOTSTRAP_SERVERS` | `….confluent.cloud:9092` |
+| `SCHEMA_REGISTRY_URL` | Variable `SCHEMA_ENVIRONMENT_URL` | `https://psrc-….confluent.cloud` |
+| `CONFLUENT_CLUSTER_API_KEY`, `CONFLUENT_CLUSTER_API_SECRET` | Secrets of the same names | |
+
+The runtime keys are never in the repo or in GitHub. Create a cluster API key and a schema registry API key in Confluent Cloud for the apps (ideally owned by a service account that can only read and write the four topics and read schemas), then set them once:
+
+```sh
+pnpm sst secret set KafkaApiKey <key> --stage demo
+pnpm sst secret set KafkaApiSecret <secret> --stage demo
+pnpm sst secret set SchemaRegistryApiKey <key> --stage demo
+pnpm sst secret set SchemaRegistryApiSecret <secret> --stage demo
+```
+
+`sst deploy` fails until all four are set. A function gets them, and the cluster's address, as the environment variables that `kafkaClientsFromEnv` in the shared package reads.
+
+A dev stage deploys without Kafka (no topics, no publish function) unless you give it a cluster. Topic names are fixed, so it cannot share the `demo` cluster: create another cluster, put the six environment variables above in `.env` (ignored by git; SST loads it), register the schemas with `pnpm schemas:register`, and set the four secrets for your stage.
+
+### The throwaway publish function
+
+Until a real service publishes, the `PublishEvent` function writes a made-up agreement and its `AgreementRequested` outbox item to a throwaway table in one transaction, and the table's stream invokes the outbox relay, which publishes the event to the `agreements` topic as Avro. Its name is the `publishEventFunction` output:
+
+```sh
+aws lambda invoke --region us-west-2 \
+  --function-name "$(jq -r .publishEventFunction .sst/outputs.json)" /dev/stdout
+```
+
+A service's own relay is one line, subscribed to its table's stream: `export const handler = outboxRelayHandler();`.
 
 ## Authentication and permissions
 
@@ -101,12 +154,20 @@ Each machine client is billed monthly by Cognito for as long as it exists, on ev
 
 ## Pull request checks
 
-`.github/workflows/ci.yml` runs install, lint, typecheck, a check that the generated types are up to date, unit tests, and integration tests (against Docker Compose in the runner) on every pull request. It deploys nothing and needs no AWS access.
+`.github/workflows/ci.yml` runs install, lint, typecheck, a check that the generated types are up to date, unit tests, integration tests (against Docker Compose in the runner), and a schema compatibility check on every pull request. It deploys nothing and needs no AWS access.
+
+The compatibility check compares every `.avsc` file with the latest version in the `demo` schema registry and fails on a `BACKWARD`-incompatible change. It registers nothing. Pull requests cannot read the `demo` environment's secrets, so the check uses repository-level settings: the `SCHEMA_REGISTRY_URL` variable, and the `SCHEMA_REGISTRY_API_KEY` and `SCHEMA_REGISTRY_API_SECRET` secrets. Any branch in this repository can read those, so give that key read-only access to the registry rather than reusing the admin key.
 
 ## Deploy
 
-`.github/workflows/deploy.yml` runs on every merge to `main`. It runs the same checks as a pull request (it calls `ci.yml`), then runs `sst deploy --stage demo` and requests the throwaway route on the deployed gateway: once without a token, expecting `401`, and once with a token fetched as the `smoke-test` client, expecting `200`.
+`.github/workflows/deploy.yml` runs on every merge to `main`. It runs the same checks as a pull request (it calls `ci.yml`), and then:
+
+1. Registers the schemas with the `demo` registry, setting each subject to `BACKWARD`. An incompatible schema fails here, before anything deploys.
+2. Runs `sst deploy --stage demo`, which creates or updates the topics along with the AWS resources.
+3. Requests the throwaway route on the deployed gateway: once without a token, expecting `401`, and once with a token fetched as the `smoke-test` client, expecting `200`.
+4. Invokes the throwaway publish function, then reads the `agreements` topic until the event arrives and prints it decoded.
 
 - The deploy job runs in the `demo` GitHub environment and assumes the AWS role in that environment's `AWS_ROLE_ARN` variable through OIDC. No AWS key is stored in GitHub.
 - The token check reads the `smoke-test` client's ID and secret from the `demo` environment secrets `SMOKE_TEST_CLIENT_ID` and `SMOKE_TEST_CLIENT_SECRET`. Cognito generates them on the first deploy that creates the client, so that one run fails at the check; copy both from the Cognito console (user pool → App clients → `smoke-test`) into the environment secrets and re-run the job. They change only if the client is replaced.
+- Schema registration and topic creation use the admin keys in the `demo` environment's secrets (`CONFLUENT_SR_API_KEY`, `CONFLUENT_SR_API_SECRET`, `CONFLUENT_CLUSTER_API_KEY`, `CONFLUENT_CLUSTER_API_SECRET`). See [Kafka](#kafka) for the variables and for the runtime secrets, which must be set from a laptop before the first deploy.
 - Deploys never run in parallel. A run that starts while another is in progress waits for it to finish.
