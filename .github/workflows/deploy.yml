@@ -70,6 +70,8 @@ jobs:
           CONFLUENT_CLUSTER_API_KEY: ${{ secrets.CONFLUENT_CLUSTER_API_KEY }}
           CONFLUENT_CLUSTER_API_SECRET: ${{ secrets.CONFLUENT_CLUSTER_API_SECRET }}
           SCHEMA_REGISTRY_URL: ${{ vars.SCHEMA_ENVIRONMENT_URL }}
+          GRAFANA_OTLP_ENDPOINT: ${{ vars.GRAFANA_OTLP_ENDPOINT }}
+          GRAFANA_OTLP_INSTANCE_ID: ${{ vars.GRAFANA_OTLP_INSTANCE_ID }}
         run: pnpm sst deploy --stage demo
 
       - name: Check the throwaway route

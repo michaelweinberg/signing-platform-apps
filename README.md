@@ -24,13 +24,15 @@ The apps monorepo for the signing platform. Specs live in
 
 ## Local infrastructure
 
-Integration tests need Kafka, a schema registry, and DynamoDB Local. Docker Compose runs all three:
+Integration tests need Kafka, a schema registry, DynamoDB Local, and Grafana's all-in-one image (Grafana with Tempo, Loki, and Prometheus behind an OpenTelemetry collector). Docker Compose runs all four:
 
 ```sh
 docker compose up -d --wait   # start, and wait until healthy
 pnpm test:integration
 docker compose down           # stop and discard all data
 ```
+
+Grafana is at <http://localhost:3000>, with no sign-in. See [Telemetry](#telemetry).
 
 ## Events
 
@@ -51,7 +53,7 @@ SCHEMA_REGISTRY_URL=http://localhost:8081 pnpm schemas:check
 
 ## Infrastructure and stages
 
-`sst.config.ts` declares all infrastructure with [SST](https://sst.dev): for now the one shared API Gateway (HTTP API), the Cognito user pool, the Kafka topics, a throwaway `GET /hello` route, and a throwaway function that publishes one event. Every stage deploys to `us-west-2`.
+`sst.config.ts` declares all infrastructure with [SST](https://sst.dev): for now the one shared API Gateway (HTTP API), the Cognito user pool, the Kafka topics, the OpenTelemetry collector layer on every function, a throwaway `GET /hello` route, and a throwaway function that publishes one event. Every stage deploys to `us-west-2`.
 
 | Stage | Deployed by | How |
 |---|---|---|
@@ -116,6 +118,80 @@ aws lambda invoke --region us-west-2 \
 
 A service's own relay is one line, subscribed to its table's stream: `export const handler = outboxRelayHandler();`.
 
+## Telemetry
+
+Traces, metrics, and logs are produced with OpenTelemetry from `packages/shared` and viewed in Grafana. The spec is [observability.md](https://github.com/michaelweinberg/signing-platform-documentation/blob/main/docs/observability.md).
+
+### Instrumenting a function
+
+Wrap every Lambda handler in `withTelemetry`, and wrap its settings in `instrumented('<service>', { ... })` in `sst.config.ts`:
+
+```ts
+export const handler = withTelemetry(async (event) => {
+  return withAgreement({ agreementId, correlationId }, async () => {
+    logger.info('Envelope sent', { envelopeId });
+    ...
+  });
+});
+```
+
+| Piece | Does |
+|---|---|
+| `withTelemetry(handler)` | Starts the SDK, makes each invocation a span (continuing the caller's trace when an HTTP request carries `traceparent`), and hands everything recorded to the collector before the function returns |
+| `withAgreement(ids, fn)` | Puts the agreement ID and correlation ID on the current span, on every span started inside, and on every log line written inside |
+| `logger` | Writes one JSON line per event to stdout, with the trace ID, span ID, correlation ID, and agreement ID, and sends the same event to Grafana as an OpenTelemetry log record |
+| `outboxRelayHandler()` | Already wrapped in `withTelemetry` |
+
+Spans are created by hand, not by auto-instrumentation: OpenTelemetry's instrumentation libraries patch modules as they are loaded, which does nothing once SST has bundled a function into one file.
+
+### One trace across the outbox
+
+A DynamoDB stream carries no trace context, so the outbox carries it:
+
+1. `outboxPut` saves the current `traceparent` and `tracestate` on the outbox item, with the time it was written. Call it inside the handler's span.
+2. The relay restores that context for each item and starts an `outbox relay` span and, inside it, a `send <topic>` span.
+3. The `send` span's context goes out as the Kafka message's `traceparent` and `tracestate` headers, for the consumer to continue.
+
+The sampler records its decision in `tracestate` (`ot=th:0`, meaning every trace is sampled), so a trace that starts in one of these services always has one. A trace that starts elsewhere keeps whatever `tracestate` its caller sent; if the caller sent only `traceparent`, the Kafka message has no `tracestate` header either.
+
+### Metrics
+
+| Metric | Type | Labels |
+|---|---|---|
+| `events_published_total` | counter | `service`, `topic`, `event_type` |
+| `outbox_relay_delay_ms` | histogram | `service` |
+
+`event_type` is the event's name in the catalogue, such as `AgreementRequested`. Keep label values bounded: never an agreement ID. Each running copy of a function also reports under its own random `service.instance.id`, so that two copies do not overwrite each other's counters.
+
+### Where it goes
+
+The SDK exports over OTLP/HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT`. Without that variable nothing is exported; log lines are still written to stdout.
+
+| Running | Exports to |
+|---|---|
+| A deployed function | The [OpenTelemetry collector Lambda layer](https://github.com/open-telemetry/opentelemetry-lambda/tree/main/collector) on `localhost:4318`, configured by `packages/shared/collector.yaml`, which forwards to Grafana Cloud after the function has returned |
+| `pnpm test:integration` | The Grafana container, at `http://localhost:4318` |
+| `pnpm dev` (live mode) | The Grafana container too, if it is running: live functions run on your laptop with the deployed function's environment |
+
+To look at a trace locally, run the integration tests, open <http://localhost:3000>, and choose Explore → Tempo → Search. Logs are under Loki and metrics under Prometheus in the same place.
+
+### Grafana Cloud
+
+`sst deploy` reads the stack's OTLP endpoint and instance ID from environment variables; both are on the stack's "OpenTelemetry" page in the Grafana Cloud portal. The deploy workflow fills them from the `demo` environment:
+
+| Environment variable | `demo` environment | Example |
+|---|---|---|
+| `GRAFANA_OTLP_ENDPOINT` | Variable of the same name | `https://otlp-gateway-prod-us-west-0.grafana.net/otlp` |
+| `GRAFANA_OTLP_INSTANCE_ID` | Variable of the same name | `123456` |
+
+The token is an SST secret, like the Kafka runtime keys. Create an access policy token in Grafana Cloud with the `traces:write`, `metrics:write`, and `logs:write` scopes, then set it once:
+
+```sh
+pnpm sst secret set GrafanaOtlpToken <token> --stage demo
+```
+
+The `demo` stage does not deploy without all three. A dev stage deploys without the collector layer unless you put the two variables in `.env` and set the secret for your stage.
+
 ## Authentication and permissions
 
 Every route on the gateway requires an access token from the stage's Cognito user pool. `sst.config.ts` sets the JWT authorizer as the default for every route; a route opts out only with `auth: false`. A missing, expired, or foreign token gets `401` at the gateway and no Lambda runs.
@@ -154,7 +230,7 @@ Each machine client is billed monthly by Cognito for as long as it exists, on ev
 
 ## Pull request checks
 
-`.github/workflows/ci.yml` runs install, lint, typecheck, a check that the generated types are up to date, unit tests, integration tests (against Docker Compose in the runner), and a schema compatibility check on every pull request. It deploys nothing and needs no AWS access.
+`.github/workflows/ci.yml` runs install, lint, typecheck, a check that the generated types are up to date, unit tests, integration tests (against Docker Compose in the runner, including the check that a trace reaches Grafana), and a schema compatibility check on every pull request. It deploys nothing and needs no AWS access.
 
 The compatibility check compares every `.avsc` file with the latest version in the `demo` schema registry and fails on a `BACKWARD`-incompatible change. It registers nothing. Pull requests cannot read the `demo` environment's secrets, so the check uses repository-level settings: the `SCHEMA_REGISTRY_URL` variable, and the `SCHEMA_REGISTRY_API_KEY` and `SCHEMA_REGISTRY_API_SECRET` secrets. Any branch in this repository can read those, so give that key read-only access to the registry rather than reusing the admin key.
 
@@ -165,9 +241,10 @@ The compatibility check compares every `.avsc` file with the latest version in t
 1. Registers the schemas with the `demo` registry, setting each subject to `BACKWARD`. An incompatible schema fails here, before anything deploys.
 2. Runs `sst deploy --stage demo`, which creates or updates the topics along with the AWS resources.
 3. Requests the throwaway route on the deployed gateway: once without a token, expecting `401`, and once with a token fetched as the `smoke-test` client, expecting `200`.
-4. Invokes the throwaway publish function, then reads the `agreements` topic until the event arrives and prints it decoded.
+4. Invokes the throwaway publish function, then reads the `agreements` topic until the event arrives and prints it decoded, with its `traceparent` and `tracestate` headers. The step fails if the message carries no trace context. To see the trace, search Grafana Cloud's Tempo for the trace ID: the second part of `traceparent`.
 
 - The deploy job runs in the `demo` GitHub environment and assumes the AWS role in that environment's `AWS_ROLE_ARN` variable through OIDC. No AWS key is stored in GitHub.
 - The token check reads the `smoke-test` client's ID and secret from the `demo` environment secrets `SMOKE_TEST_CLIENT_ID` and `SMOKE_TEST_CLIENT_SECRET`. Cognito generates them on the first deploy that creates the client, so that one run fails at the check; copy both from the Cognito console (user pool → App clients → `smoke-test`) into the environment secrets and re-run the job. They change only if the client is replaced.
 - Schema registration and topic creation use the admin keys in the `demo` environment's secrets (`CONFLUENT_SR_API_KEY`, `CONFLUENT_SR_API_SECRET`, `CONFLUENT_CLUSTER_API_KEY`, `CONFLUENT_CLUSTER_API_SECRET`). See [Kafka](#kafka) for the variables and for the runtime secrets, which must be set from a laptop before the first deploy.
+- Telemetry needs the `GRAFANA_OTLP_ENDPOINT` and `GRAFANA_OTLP_INSTANCE_ID` variables on the `demo` environment, and the `GrafanaOtlpToken` SST secret. See [Grafana Cloud](#grafana-cloud).
 - Deploys never run in parallel. A run that starts while another is in progress waits for it to finish.

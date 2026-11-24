@@ -1,4 +1,5 @@
-# Local infrastructure for integration tests: Kafka, a schema registry, and DynamoDB Local.
+# Local infrastructure for integration tests: Kafka, a schema registry, DynamoDB Local, and
+# Grafana with its telemetry stores.
 # Start with `docker compose up -d --wait`; stop and discard all data with `docker compose down`.
 services:
   kafka:
@@ -56,3 +57,18 @@ services:
       interval: 2s
       timeout: 5s
       retries: 20
+
+  # Grafana's all-in-one image: an OpenTelemetry collector in front of Tempo (traces), Loki
+  # (logs), and Prometheus (metrics), with Grafana at http://localhost:3000 (no sign-in needed).
+  grafana:
+    image: grafana/otel-lgtm:0.41.1
+    ports:
+      - "3000:3000" # Grafana
+      - "4318:4318" # OTLP over HTTP: what OTEL_EXPORTER_OTLP_ENDPOINT points at
+      - "3200:3200" # Tempo's API, which the integration tests read traces from
+    healthcheck:
+      # The image's own check, run more often than its default of every 30 seconds.
+      test: ["CMD", "/otel-lgtm/docker/healthcheck.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 30

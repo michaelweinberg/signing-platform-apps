@@ -6,6 +6,7 @@
 // Throwaway, like the function it checks.
 import { randomUUID } from 'node:crypto';
 import { kafkaClientsFromEnv } from '@signing-platform/shared';
+import type { KafkaMessage } from 'kafkajs';
 
 const TIMEOUT_MS = 90_000;
 
@@ -19,16 +20,16 @@ const consumer = kafka.consumer({ groupId });
 await consumer.connect();
 await consumer.subscribe({ topic, fromBeginning: true });
 
-let value: Buffer | undefined;
+let message: KafkaMessage | undefined;
 try {
-  value = await new Promise<Buffer | undefined>((resolve, reject) => {
+  message = await new Promise<KafkaMessage | undefined>((resolve, reject) => {
     const timer = setTimeout(() => resolve(undefined), TIMEOUT_MS);
     consumer
       .run({
         eachMessage: ({ message }) => {
           if (message.key?.toString() === key && message.value) {
             clearTimeout(timer);
-            resolve(message.value);
+            resolve(message);
           }
           return Promise.resolve();
         },
@@ -44,7 +45,8 @@ try {
   await admin.disconnect();
 }
 
-if (!value) {
+const value = message?.value;
+if (!message || !value) {
   console.error(`::error::No message with key ${key} arrived on ${topic} within ${TIMEOUT_MS / 1000} seconds.`);
   process.exit(1);
 }
@@ -52,3 +54,12 @@ if (!value) {
 // Confluent wire format: magic byte 0, a four-byte schema ID, then the Avro payload.
 console.log(`Message on ${topic}: magic byte ${value.readUInt8(0)}, schema ID ${value.readUInt32BE(1)}`);
 console.log(JSON.stringify(await registry.decode(value), null, 2));
+
+// The trace the event belongs to: search for the trace ID (the second part) in Grafana.
+const traceparent = message.headers?.traceparent?.toString();
+const tracestate = message.headers?.tracestate?.toString();
+console.log(`traceparent: ${traceparent}\ntracestate: ${tracestate}`);
+if (!traceparent || !tracestate) {
+  console.error('::error::The message carries no trace context. Is telemetry set up for this stage? See the README.');
+  process.exit(1);
+}

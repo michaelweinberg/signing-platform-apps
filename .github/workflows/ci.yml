@@ -52,7 +52,7 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-      - name: Start Kafka, schema registry, and DynamoDB Local
+      - name: Start Kafka, schema registry, DynamoDB Local, and Grafana
         run: docker compose up -d --wait
 
       - name: Integration tests

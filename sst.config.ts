@@ -145,12 +145,66 @@ export default $config({
       },
     });
 
+    // ---- Telemetry ---------------------------------------------------------------------
+
+    // Where the stage's Grafana Cloud stack accepts OTLP, and the stack's instance ID. The
+    // deploy workflow sets these from the `demo` GitHub environment; a dev stage reads them
+    // from `.env`. A dev stage without them deploys without the collector layer.
+    const grafana = {
+      endpoint: process.env.GRAFANA_OTLP_ENDPOINT,
+      instanceId: process.env.GRAFANA_OTLP_INSTANCE_ID,
+    };
+    const hasGrafana = Boolean(grafana.endpoint && grafana.instanceId);
+    if (!hasGrafana && (grafana.endpoint || grafana.instanceId || $app.stage === 'demo')) {
+      throw new Error(
+        'Grafana settings missing: set both GRAFANA_OTLP_ENDPOINT and GRAFANA_OTLP_INSTANCE_ID. See "Telemetry" in the README.',
+      );
+    }
+    // A Grafana Cloud access policy token that may write traces, metrics, and logs. Set
+    // once per stage from a laptop.
+    const grafanaOtlpToken = hasGrafana ? new sst.Secret('GrafanaOtlpToken') : undefined;
+
+    // The OpenTelemetry collector as a Lambda layer, published by the OpenTelemetry project.
+    // `amd64` matches the functions' architecture (SST's default, x86_64).
+    const collectorLayer = $interpolate`arn:aws:lambda:${aws.getRegionOutput().region}:184161586896:layer:opentelemetry-collector-amd64-0_24_0:1`;
+
+    // Adds telemetry to a function's settings: the service name it reports, and, on a stage
+    // with Grafana, the collector layer and the address the function's SDK exports to.
+    // Wrap every function's settings in this.
+    const instrumented = <Args extends { environment?: Record<string, $util.Input<string>> }>(service: string, args: Args) => ({
+      ...args,
+      environment: {
+        ...args.environment,
+        OTEL_SERVICE_NAME: service,
+        OTEL_RESOURCE_ATTRIBUTES: `deployment.environment.name=${$app.stage}`,
+        ...(hasGrafana
+          ? {
+              // The collector layer, listening inside the function's own sandbox.
+              OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318',
+              OPENTELEMETRY_COLLECTOR_CONFIG_URI: '/var/task/collector.yaml',
+              GRAFANA_OTLP_ENDPOINT: grafana.endpoint!,
+              GRAFANA_OTLP_INSTANCE_ID: grafana.instanceId!,
+              GRAFANA_OTLP_TOKEN: grafanaOtlpToken!.value,
+            }
+          : {}),
+      },
+      ...(hasGrafana
+        ? {
+            layers: [collectorLayer],
+            copyFiles: [{ from: 'packages/shared/collector.yaml', to: 'collector.yaml' }],
+          }
+        : {}),
+    });
+
     // Throwaway route: proves the deploy pipeline and the token checks end to end.
     // Remove it once a real route exists.
-    api.route('GET /hello', {
-      handler: 'apps/hello/src/handler.handler',
-      runtime: 'nodejs24.x',
-    });
+    api.route(
+      'GET /hello',
+      instrumented('hello', {
+        handler: 'apps/hello/src/handler.handler',
+        runtime: 'nodejs24.x',
+      }),
+    );
 
     // ---- Kafka -------------------------------------------------------------------------
 
@@ -217,21 +271,24 @@ export default $config({
 
       publishEventTable.subscribe(
         'PublishEventRelay',
-        {
+        instrumented('publish-event', {
           handler: 'apps/publish-event/src/relay.handler',
           runtime: 'nodejs24.x',
           timeout: '30 seconds',
           environment: kafkaEnvironment,
-        },
+        }),
         { filters: [{ eventName: ['INSERT'] }] },
       );
 
-      const publishEvent = new sst.aws.Function('PublishEvent', {
-        handler: 'apps/publish-event/src/publish.handler',
-        runtime: 'nodejs24.x',
-        environment: { TABLE_NAME: publishEventTable.name },
-        permissions: [{ actions: ['dynamodb:PutItem'], resources: [publishEventTable.arn] }],
-      });
+      const publishEvent = new sst.aws.Function(
+        'PublishEvent',
+        instrumented('publish-event', {
+          handler: 'apps/publish-event/src/publish.handler',
+          runtime: 'nodejs24.x',
+          environment: { TABLE_NAME: publishEventTable.name },
+          permissions: [{ actions: ['dynamodb:PutItem'], resources: [publishEventTable.arn] }],
+        }),
+      );
       publishEventFunction = publishEvent.name;
     }
 

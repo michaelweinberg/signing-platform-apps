@@ -9,6 +9,7 @@ import {
 } from '@aws-sdk/client-dynamodb-streams';
 import { DynamoDBDocumentClient, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { SchemaType } from '@kafkajs/confluent-schema-registry';
+import { trace } from '@opentelemetry/api';
 import { Kafka, logLevel, type KafkaMessage } from 'kafkajs';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import {
@@ -17,6 +18,8 @@ import {
   createSchemaRegistry,
   encodeEvent,
   outboxPut,
+  withAgreement,
+  withTelemetry,
   type AgreementRequested,
   type OutboxStreamRecord,
 } from './index.js';
@@ -38,6 +41,11 @@ const producer = kafka.producer();
 const registry = createSchemaRegistry({
   host: process.env.SCHEMA_REGISTRY_URL ?? 'http://localhost:8081',
 });
+
+// Telemetry goes to the Grafana container, as it does from a laptop.
+process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??= 'http://localhost:4318';
+process.env.OTEL_SERVICE_NAME ??= 'outbox-integration-test';
+const tempoUrl = process.env.TEMPO_URL ?? 'http://localhost:3200';
 const relay = createOutboxRelay({ producer, registry });
 
 const tableName = `outbox-test-${randomUUID()}`;
@@ -158,6 +166,56 @@ test('a state change and its event are written together and the relay publishes 
     await registry.getLatestSchemaId('agreements-signingplatform.agreements.AgreementRequested'),
   );
   expect(await registry.decode(value)).toEqual(event);
+});
+
+interface TempoTrace {
+  batches: { scopeSpans: { spans: { name: string; spanId: string; parentSpanId?: string }[] }[] }[];
+}
+
+/** Asks Tempo for a trace until every expected span has arrived. */
+async function traceFromGrafana(traceId: string, spanCount: number) {
+  for (;;) {
+    const response = await fetch(`${tempoUrl}/api/traces/${traceId}`, { headers: { accept: 'application/json' } });
+    if (response.ok) {
+      const { batches } = (await response.json()) as TempoTrace;
+      const spans = batches.flatMap((batch) => batch.scopeSpans).flatMap((scope) => scope.spans);
+      if (spans.length >= spanCount) return spans;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+test('one trace runs from the handler through the relay to the Kafka message, and is in Grafana', async () => {
+  const event = agreementRequested();
+
+  // Two invocations, as on a deployed stage: the handler writes, then the stream calls the relay.
+  const handler = withTelemetry(() =>
+    withAgreement(event, async () => {
+      await documents.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            { Put: { TableName: tableName, Item: { PK: `AGREEMENT#${event.agreementId}` } } },
+            outboxPut('AgreementRequested', event, { tableName }),
+          ],
+        }),
+      );
+      return trace.getActiveSpan()!.spanContext().traceId;
+    }),
+  );
+  const traceId = await handler();
+  await withTelemetry(relay)({ Records: await readStream() });
+
+  const { headers } = await consumeByKey('agreements', event.agreementId);
+  expect(headers?.traceparent?.toString()).toMatch(new RegExp(`^00-${traceId}-[0-9a-f]{16}-01$`));
+  expect(headers?.tracestate?.toString()).toMatch(/^ot=th:0/);
+
+  // Unbroken: each span's parent is the one before it.
+  const spans = await traceFromGrafana(traceId, 3);
+  const byName = new Map(spans.map((span) => [span.name, span]));
+  expect([...byName.keys()].sort()).toEqual(['outbox relay', 'outbox-integration-test', 'send agreements']);
+  expect(byName.get('outbox-integration-test')!.parentSpanId).toBeFalsy();
+  expect(byName.get('outbox relay')!.parentSpanId).toBe(byName.get('outbox-integration-test')!.spanId);
+  expect(byName.get('send agreements')!.parentSpanId).toBe(byName.get('outbox relay')!.spanId);
 });
 
 test('a process that has validated an event can still encode it with a new registry client', async () => {
