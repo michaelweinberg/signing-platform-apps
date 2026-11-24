@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { outboxPut, type AgreementRequested } from '@signing-platform/shared';
+import { logger, outboxPut, withAgreement, withTelemetry, type AgreementRequested } from '@signing-platform/shared';
 
 // Throwaway function: proves that an event written to an outbox on a deployed stage
 // reaches Confluent Cloud as Avro. Remove it, with its table and relay, once a real
@@ -10,7 +10,7 @@ import { outboxPut, type AgreementRequested } from '@signing-platform/shared';
 const documents = DynamoDBDocumentClient.from(new DynamoDBClient());
 
 /** Writes a made-up agreement and its `AgreementRequested` event in one transaction. */
-export async function handler(): Promise<{ topic: string; agreementId: string; eventId: string }> {
+export const handler = withTelemetry(async () => {
   const tableName = process.env.TABLE_NAME;
   if (!tableName) throw new Error('Environment variable TABLE_NAME is not set');
 
@@ -31,14 +31,17 @@ export async function handler(): Promise<{ topic: string; agreementId: string; e
     signerEmail: 'nobody@example.com',
   };
 
-  await documents.send(
-    new TransactWriteCommand({
-      TransactItems: [
-        { Put: { TableName: tableName, Item: { PK: `AGREEMENT#${event.agreementId}` } } },
-        outboxPut('AgreementRequested', event, { tableName }),
-      ],
-    }),
-  );
+  return withAgreement(event, async () => {
+    await documents.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          { Put: { TableName: tableName, Item: { PK: `AGREEMENT#${event.agreementId}` } } },
+          outboxPut('AgreementRequested', event, { tableName }),
+        ],
+      }),
+    );
+    logger.info('Wrote a throwaway agreement and its outbox item', { eventId: event.eventId });
 
-  return { topic: 'agreements', agreementId: event.agreementId, eventId: event.eventId };
-}
+    return { topic: 'agreements', agreementId: event.agreementId, eventId: event.eventId };
+  });
+});

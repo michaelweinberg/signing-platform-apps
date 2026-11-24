@@ -51,6 +51,7 @@ test('the outbox item holds the event, its topic, and the agreement ID as the me
         topic: 'envelopes',
         key: event.agreementId,
         payload: JSON.stringify(event),
+        createdAt: expect.any(Number) as number,
       },
       ConditionExpression: 'attribute_not_exists(PK)',
     },
@@ -82,6 +83,8 @@ test('the relay publishes inserted outbox items in stream order, keyed by agreem
           messages: [event, later].map((e) => ({
             key: event.agreementId,
             value: Buffer.from(`7:${JSON.stringify(e)}`),
+            // No span is being recorded here, so there is no trace context to carry.
+            headers: {},
           })),
         },
       ],
